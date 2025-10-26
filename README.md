@@ -28,7 +28,7 @@ npm install
 npm run dev
 ```
 
-The `dev` script starts the MCP server over stdio. Connect it to ChatGPT via the Apps SDK development flow (e.g., with `openai apps dev --app app.json --command "npm run dev"`).
+The `dev` script now serves a Streamable HTTP endpoint at `http://127.0.0.1:2091/mcp`. For local ChatGPT testing, tunnel that port (for example `ngrok http 2091`) and use the public `/mcp` URL when creating a connector.
 
 Timers are persisted to `.timergpt/timers.json` relative to the working directory. Override the location with `TIMERGPT_STORAGE_PATH=/custom/path.json`.
 

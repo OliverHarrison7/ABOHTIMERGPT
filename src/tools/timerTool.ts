@@ -27,11 +27,13 @@ export const startTimerInput = baseTimerSchema.extend({
     .optional()
 });
 
-export const adjustTimerInput = z.object({
+export const adjustTimerShape = {
   id: z.string().uuid(),
   minutes: z.number().int().min(-120).max(120).optional(),
   seconds: z.number().int().min(-59).max(59).optional()
-}).refine(value => (value.minutes ?? 0) !== 0 || (value.seconds ?? 0) !== 0, {
+};
+
+export const adjustTimerInput = z.object(adjustTimerShape).refine(value => (value.minutes ?? 0) !== 0 || (value.seconds ?? 0) !== 0, {
   message: "Adjustments must change the timer by at least one second."
 });
 
