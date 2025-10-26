@@ -1,0 +1,28 @@
+{
+  "name": "timergpt-app",
+  "version": "0.1.0",
+  "description": "TimerGPT – a multi-surface timer experience for ChatGPT built with the OpenAI Apps SDK.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p .",
+    "lint": "eslint \"{src,test}/**/*.ts\"",
+    "test": "node --test --import tsx test/**/*.test.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.2",
+    "date-fns": "^3.6.0",
+    "zod": "^3.23.8",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "@types/uuid": "^9.0.7",
+    "@typescript-eslint/eslint-plugin": "^7.16.0",
+    "@typescript-eslint/parser": "^7.16.0",
+    "eslint": "^8.57.0",
+    "tsx": "^4.15.1",
+    "typescript": "^5.5.4"
+  }
+}

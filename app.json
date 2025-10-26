@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.1",
+  "name": "TimerGPT",
+  "description": "Create, track, and manage focus timers directly inside ChatGPT.",
+  "developer": {
+    "name": "TimerGPT Team",
+    "contact_email": "support@example.com"
+  },
+  "capabilities": {
+    "surfaces": [
+      "inline_card",
+      "inspect",
+      "fullscreen",
+      "picture_in_picture"
+    ]
+  },
+  "default_locale": "en",
+  "summary": "Lightweight Pomodoro and custom countdown timers that stay conversational.",
+  "badge_text": "Timer",
+  "pip": {
+    "default_enabled": true,
+    "dismiss_on_completion": true
+  }
+}
