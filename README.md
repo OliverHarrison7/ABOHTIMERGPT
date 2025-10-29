@@ -49,8 +49,4 @@ Integration tests exercise the end-to-end timer lifecycle using the Node.js test
 - **Accessibility:** All surfaces supply descriptive `accessibilityLabel` strings and rely on platform typography and colors.
 - **Structured payloads:** `buildTimerStructuredContent` packages inline/inspect/fullscreen/PiP data for the Apps SDK runtime.
 
-## Next Steps
-1. Replace the custom structured payload with the official `@openai/chatgpt-apps` UI primitives once the package is available publicly.
-2. Swap file-backed persistence for the Apps SDK storage API to support multi-user deployments.
-3. Extend the UX to cover recurring timer series and pip pin/unpin commands.
-4. Localize copy via the Apps SDK i18n utilities to support additional locales.
+
