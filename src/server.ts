@@ -1,44 +1,130 @@
-import { resolve } from "path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { McpServer as McpServerType } from "@modelcontextprotocol/sdk/server/mcp.js";
-import packageJson from "../package.json" with { type: "json" };
-import { TimerStore } from "./state/timerStore.js";
-import { TimerFileStorage } from "./state/timerStorage.js";
-import { TimerToolset, startTimerInput, adjustTimerShape } from "./tools/timerTool.js";
-import { buildTimerStructuredContent, buildFullscreenSheet } from "./ui/builders.js";
-import type { Timer } from "./types.js";
 import { z } from "zod";
-
-const idArgsShape = { id: z.string().uuid() };
-const idSchema = z.object(idArgsShape);
-
-export interface TimerServerOptions {
-  storagePath?: string;
-}
+import packageJson from "../package.json" with { type: "json" };
+import { TimerManager, TimerSnapshot } from "./timers.js";
 
 export interface TimerServerContext {
-  server: McpServerType;
-  toolset: TimerToolset;
-  storagePath: string;
+  server: McpServer;
+  timers: TimerManager;
 }
 
-export async function createTimerServer(options: TimerServerOptions = {}): Promise<TimerServerContext> {
-  const storagePath =
-    options.storagePath ?? process.env.TIMERGPT_STORAGE_PATH ?? resolve(process.cwd(), ".timergpt", "timers.json");
+const MAX_DURATION_SECONDS = 3600;
 
-  const storage = new TimerFileStorage(storagePath);
-  const initialTimers = await storage.load();
-  const store = new TimerStore({
-    initialTimers,
-    onChange: timers => storage.save(timers)
-  });
-  const toolset = new TimerToolset(store);
+export function parseDurationSeconds(input: string): number {
+  const normalized = input.trim().toLowerCase();
+  if (!normalized) {
+    throw new Error("Duration must not be empty.");
+  }
 
+  const mmSsMatch = normalized.match(/^(\d{1,2}):([0-5]?\d)$/);
+  if (mmSsMatch) {
+    const minutes = Number(mmSsMatch[1]);
+    const seconds = Number(mmSsMatch[2]);
+    const total = minutes * 60 + seconds;
+    if (total <= 0) {
+      throw new Error("Duration must be greater than zero seconds.");
+    }
+    return total;
+  }
+
+  const unitMultipliers: Record<string, number> = {
+    h: 3600,
+    hr: 3600,
+    hrs: 3600,
+    hour: 3600,
+    hours: 3600,
+    m: 60,
+    min: 60,
+    mins: 60,
+    minute: 60,
+    minutes: 60,
+    s: 1,
+    sec: 1,
+    secs: 1,
+    second: 1,
+    seconds: 1
+  };
+
+  const unitPattern = /(\d+(?:\.\d+)?)\s*(hours?|hrs?|hr|h|minutes?|mins?|min|m|seconds?|secs?|sec|s)\b/g;
+  let match: RegExpExecArray | null;
+  let totalFromUnits = 0;
+  let matchedUnits = false;
+
+  while ((match = unitPattern.exec(normalized)) !== null) {
+    matchedUnits = true;
+    const value = Number(match[1]);
+    if (!Number.isFinite(value)) {
+      continue;
+    }
+    const unitKey = match[2].replace(/s$/, "") as keyof typeof unitMultipliers;
+    const multiplier = unitMultipliers[unitKey] ?? unitMultipliers[match[2] as keyof typeof unitMultipliers];
+    if (!multiplier) {
+      continue;
+    }
+    totalFromUnits += Math.round(value * multiplier);
+  }
+
+  if (matchedUnits) {
+    const cleanupPattern = /(\d+(?:\.\d+)?)\s*(hours?|hrs?|hr|h|minutes?|mins?|min|m|seconds?|secs?|sec|s)\b/g;
+    const leftover = normalized
+      .replace(cleanupPattern, " ")
+      .replace(/\band\b/g, " ")
+      .replace(/[,]/g, " ")
+      .trim();
+    if (/\d/.test(leftover)) {
+      throw new Error(`Could not parse duration "${input}".`);
+    }
+    if (totalFromUnits <= 0) {
+      throw new Error("Duration must be greater than zero seconds.");
+    }
+    return totalFromUnits;
+  }
+
+  const bareSeconds = Number(normalized);
+  if (Number.isFinite(bareSeconds) && bareSeconds > 0) {
+    return Math.round(bareSeconds);
+  }
+
+  throw new Error(`Could not parse duration "${input}".`);
+}
+
+const startTimerSchema = z
+  .object({
+    duration: z
+      .preprocess(value => {
+        if (typeof value === "string") {
+          return parseDurationSeconds(value);
+        }
+        return value;
+      }, z.number().int().positive().max(MAX_DURATION_SECONDS))
+      .describe("Duration in seconds, or a string like \"5 minutes\"."),
+    action: z.literal("start").optional()
+  })
+  .transform(data => ({
+    action: "start" as const,
+    duration: data.duration
+  }));
+
+const stopTimerSchema = z.object({
+  action: z.literal("stop"),
+  id: z.string().uuid()
+});
+
+const listTimerSchema = z.object({
+  action: z.literal("list")
+});
+
+const timerInputSchema = z.union([startTimerSchema, stopTimerSchema, listTimerSchema]);
+
+type TimerInput = z.infer<typeof timerInputSchema>;
+
+export function createTimerServer(): TimerServerContext {
+  const timers = new TimerManager();
   const server = new McpServer(
     {
-      name: "TimerGPT",
+      name: "Timer Demo",
       version: packageJson.version,
-      description: "Conversational timers that stay in flow with ChatGPT."
+      description: "Minimal timer app built with the OpenAI Apps SDK."
     },
     {
       capabilities: {
@@ -47,176 +133,57 @@ export async function createTimerServer(options: TimerServerOptions = {}): Promi
     }
   );
 
-  type StartTimerArgs = z.input<typeof startTimerInput>;
-  type IdArgs = z.infer<typeof idSchema>;
-  const adjustArgsSchema = z.object(adjustTimerShape);
-  type AdjustTimerArgs = z.infer<typeof adjustArgsSchema>;
-
   server.registerTool(
-    "timer.start",
+    "timer",
     {
-      title: "Start Timer",
-      description: "Create and start a new countdown timer.",
-      inputSchema: startTimerInput.shape,
+      title: "Timer",
+      description: "Start, stop, or list timers.",
+      inputSchema: {
+        action: z.enum(["start", "stop", "list"]).optional(),
+        duration: z
+          .union([
+            z.number().int().positive().max(MAX_DURATION_SECONDS),
+            z
+              .string()
+              .min(1)
+              .describe('Examples: "5 minutes", "30s", or "1m 30s".')
+          ])
+          .optional(),
+        id: z.string().uuid().optional()
+      },
       annotations: {
         readOnlyHint: false
       }
     },
-    async (input: StartTimerArgs) => {
-      const result = await toolset.startTimer(input);
-      const timers = toolset.getSnapshot();
-      const structured = buildTimerStructuredContent({
-        primary: result.timer,
-        timers,
-        includeFullscreen: true,
-        pipTimer: result.timer.status === "running" ? result.timer : null,
-        completed: result.completed ?? []
-      });
+    async (input, extra) => {
+      const parsed: TimerInput = timerInputSchema.parse(input);
 
-      return buildCallToolResult(composeMessage(result.message, result.completed), structured);
-    }
-  );
+      switch (parsed.action) {
+        case "start": {
+          const snapshot = timers.start(parsed.duration);
 
-  server.registerTool(
-    "timer.pause",
-    {
-      title: "Pause Timer",
-      description: "Pause a running timer.",
-      inputSchema: idSchema.shape,
-      annotations: {
-        readOnlyHint: false
+          return buildResult(`Started a ${formatDurationFromSeconds(parsed.duration)} timer.`, timers.list());
+        }
+        case "stop": {
+          const snapshot = timers.stop(parsed.id);
+          return buildResult(`Stopped timer ${snapshot.id}.`, timers.list());
+        }
+        case "list":
+        default: {
+          const message = timers.list().length === 0 ? "No timers running." : "Here are the active timers.";
+          return buildResult(message, timers.list());
+        }
       }
-    },
-    async ({ id }: IdArgs) => {
-      const result = await toolset.pauseTimer(id);
-      const timers = toolset.getSnapshot();
-      const structured = buildTimerStructuredContent({
-        primary: result.timer,
-        timers,
-        completed: result.completed ?? []
-      });
-
-      return buildCallToolResult(composeMessage(result.message, result.completed), structured);
-    }
-  );
-
-  server.registerTool(
-    "timer.resume",
-    {
-      title: "Resume Timer",
-      description: "Resume a paused timer.",
-      inputSchema: idSchema.shape,
-      annotations: {
-        readOnlyHint: false
-      }
-    },
-    async ({ id }: IdArgs) => {
-      const result = await toolset.resumeTimer(id);
-      const timers = toolset.getSnapshot();
-      const structured = buildTimerStructuredContent({
-        primary: result.timer,
-        timers,
-        pipTimer: result.timer,
-        completed: result.completed ?? []
-      });
-
-      return buildCallToolResult(composeMessage(result.message, result.completed), structured);
-    }
-  );
-
-  server.registerTool(
-    "timer.cancel",
-    {
-      title: "Cancel Timer",
-      description: "Cancel a timer that is no longer needed.",
-      inputSchema: idSchema.shape,
-      annotations: {
-        readOnlyHint: false
-      }
-    },
-    async ({ id }: IdArgs) => {
-      const result = await toolset.cancelTimer(id);
-      const timers = toolset.getSnapshot();
-      const structured = buildTimerStructuredContent({
-        primary: result.timer,
-        timers,
-        completed: result.completed ?? []
-      });
-
-      return buildCallToolResult(composeMessage(result.message, result.completed), structured);
-    }
-  );
-
-  server.registerTool(
-    "timer.adjust",
-    {
-      title: "Adjust Timer",
-      description: "Extend or shorten an active timer.",
-      inputSchema: adjustTimerShape,
-      annotations: {
-        readOnlyHint: false
-      }
-    },
-    async (input: AdjustTimerArgs) => {
-      const result = await toolset.extendTimer(input);
-      const timers = toolset.getSnapshot();
-      const structured = buildTimerStructuredContent({
-        primary: result.timer,
-        timers,
-        completed: result.completed ?? []
-      });
-
-      return buildCallToolResult(composeMessage(result.message, result.completed), structured);
-    }
-  );
-
-  server.registerTool(
-    "timer.list",
-    {
-      title: "List Timers",
-      description: "Review timers that are active, paused, or completed.",
-      inputSchema: {},
-      annotations: {
-        readOnlyHint: true
-      }
-    },
-    async () => {
-      const { timers, completed } = await toolset.listTimers();
-      const primary = timers[0];
-      const structured = buildTimerStructuredContent({
-        primary,
-        timers,
-        includeFullscreen: timers.length > 0,
-        completed
-      });
-
-      const message =
-        timers.length === 0 ? "No timers yet. Ask me to start one!" : composeMessage("Here are your timers.", completed);
-
-      return buildCallToolResult(message, structured);
     }
   );
 
   return {
     server,
-    toolset,
-    storagePath
+    timers
   };
 }
 
-function composeMessage(primary: string, completed: Timer[] | undefined): string {
-  if (!completed || completed.length === 0) {
-    return primary;
-  }
-
-  const labels = Array.from(new Set(completed.map(timer => timer.label)));
-  const summary = labels.join(", ");
-  const suffix = `${summary} finished.`;
-  const separator = primary.trim().endsWith(".") ? " " : ". ";
-  return `${primary.trim()}${separator}${suffix}`;
-}
-
-function buildCallToolResult(message: string, structured: ReturnType<typeof buildTimerStructuredContent>) {
+function buildResult(message: string, timers: TimerSnapshot[]) {
   return {
     content: [
       {
@@ -224,10 +191,77 @@ function buildCallToolResult(message: string, structured: ReturnType<typeof buil
         text: message
       }
     ],
-    structuredContent: {
-      app: "TimerGPT",
-      ...structured,
-      fullscreen: structured.fullscreen ?? buildFullscreenSheet()
+    structuredContent: buildStructuredContent(timers),
+    output: {
+      timers
     }
   };
+}
+
+function buildStructuredContent(timers: TimerSnapshot[]) {
+  if (timers.length === 0) {
+    return {
+      app: "Timer Demo",
+      inlineCard: {
+        surface: "inline_card",
+        heading: "Timer Demo",
+        body: "No active timers. Use the widget to start one.",
+        accessibilityLabel: "No active timers."
+      }
+    };
+  }
+
+  const body = timers
+    .map(timer => {
+      const remaining = formatRemaining(timer.remainingMs);
+      const total = Math.round(timer.durationMs / 1000);
+      return `Timer: ${remaining} left (was ${total}s)`;
+    })
+    .join("\n");
+
+  return {
+    app: "Timer Demo",
+    inlineCard: {
+      surface: "inline_card",
+      heading: "Active Timers",
+      body,
+      accessibilityLabel: "Timers currently running."
+    }
+  };
+}
+
+function formatRemaining(ms: number): string {
+  const totalSeconds = Math.max(Math.round(ms / 1000), 0);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes > 0 && seconds > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m`;
+  }
+  return `${seconds}s`;
+}
+
+function formatDurationFromSeconds(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  const parts: string[] = [];
+
+  if (minutes > 0) {
+    parts.push(`${minutes} minute${minutes === 1 ? "" : "s"}`);
+  }
+  if (seconds > 0) {
+    parts.push(`${seconds} second${seconds === 1 ? "" : "s"}`);
+  }
+
+  if (parts.length === 0) {
+    return "0 seconds";
+  }
+
+  if (parts.length === 1) {
+    return parts[0];
+  }
+
+  return `${parts[0]} and ${parts[1]}`;
 }
